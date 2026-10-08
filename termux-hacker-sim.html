@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Termux Hacker Sim</title>
+<style>
+:root{--bg:#050505;--fg:#e8e8e8;--dim:#7d848c;--g:#3dff72;--r:#ff5a5a;--y:#ffd45c;--c:#55d6ff;--key:#22262b;--keyfg:#e8e8e8;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#000;--fg:#f0f0f0;--dim:#8a9199;--key:#1a1d21;--keyfg:#f0f0f0}}
+:root[data-theme="dark"]{--bg:#000;--fg:#f0f0f0;--dim:#8a9199;--key:#1a1d21;--keyfg:#f0f0f0}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.4 ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace}
+#app{display:flex;flex-direction:column;height:100%}
+#term{flex:1;min-height:0;overflow-y:auto;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
+#line{display:flex;align-items:flex-end}
+#in{flex:1;min-width:0;background:none;border:0;outline:0;color:inherit;font:inherit;caret-color:var(--g);padding:0}
+#keys{display:flex;gap:1px;background:var(--bg);overflow-x:auto}
+#keys button{flex:1;min-width:38px;padding:13px 0;border:0;border-radius:0;background:var(--key);color:var(--keyfg);font:inherit;font-size:13px;cursor:pointer}
+#keys button:active,#keys button:focus-visible{background:#3a4048;outline:0}
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.c{color:var(--c)}.dim{color:var(--dim)}.big{font-size:20px;font-weight:700;letter-spacing:2px}
+#fx{display:none;position:fixed;inset:0;z-index:9;background:#000;flex-direction:column;padding:env(safe-area-inset-top,0px) 0 env(safe-area-inset-bottom,0px);box-sizing:border-box}
+#fx canvas{flex:1;min-height:0;width:100%}
+.hint{order:2;text-align:center;font-size:11px;color:var(--dim);padding:3px}
+.grid{flex:1;min-height:0;display:grid;grid-template-columns:1fr 1fr;grid-auto-rows:1fr;gap:6px;padding:6px}
+@media (max-width:640px){.grid{grid-template-columns:1fr}}
+.grid section{border:1px solid #1d6b36;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.grid h4{margin:0;padding:2px 6px;background:#0d2f19;color:var(--g);font-size:11px;letter-spacing:2px;font-weight:400}
+.b{flex:1;overflow:hidden;padding:4px 6px;font-size:11.5px;white-space:pre;color:var(--g)}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="term"><div id="line"><span id="ps">~ $&nbsp;</span><input id="in" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" aria-label="terminal input"></div></div>
+  <nav id="keys">
+    <button data-k="esc">ESC</button><button data-k="tab">TAB</button><button data-k="c">^C</button><button data-k="l">^L</button><button data-k="-">-</button><button data-k="/">/</button><button data-k="|">|</button><button data-k="up">&uarr;</button><button data-k="down">&darr;</button>
+  </nav>
+</div>
+<div id="fx"></div>
+<script>
+const $=id=>document.getElementById(id);
+const T=$('term'),L=$('line'),I=$('in'),FX=$('fx');
+let hist=[],hi=0,busy=false,cancel=false,fxOn=false,closeFx=()=>{};
+const R=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+const ch=s=>s[R(0,s.length-1)];
+const hx=n=>Array.from({length:n},()=>R(0,255).toString(16).padStart(2,'0')).join(' ');
+const rip=()=>[R(11,223),R(0,255),R(0,255),R(1,254)].join('.');
+const esc=s=>String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const sl=async ms=>{await new Promise(r=>setTimeout(r,ms));if(cancel)throw 'x'};
+function out(h,c){const d=document.createElement('div');d.className=c||'';d.innerHTML=h;T.insertBefore(d,L);T.scrollTop=T.scrollHeight;return d}
+function showFx(build){return new Promise(res=>{
+  FX.innerHTML='<div class="hint">tap anywhere or press ESC to exit</div>';FX.style.display='flex';fxOn=true;
+  const stop=build(FX);
+  closeFx=()=>{stop();FX.style.display='none';fxOn=false;res()};
+})}
+FX.onclick=()=>closeFx();
+
+/* ---------- hacking visuals ---------- */
+async function bar(label){
+  const d=out('');
+  for(let i=0;i<=12;i++){d.innerHTML=`[<span class="g">${'#'.repeat(i)}</span>${'.'.repeat(12-i)}] ${String(Math.round(i*100/12)).padStart(3)}% ${label}`;T.scrollTop=T.scrollHeight;await sl(R(30,90))}
+}
+function matrix(root){
+  const cv=document.createElement('canvas');root.append(cv);
+  cv.width=cv.clientWidth;cv.height=cv.clientHeight;
+  const x=cv.getContext('2d'),fs=16,n=Math.floor(cv.width/fs),dr=Array.from({length:n},()=>R(-40,0));
+  const set='ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿ0123456789ABCDEF$#<>';
+  const t=setInterval(()=>{
+    x.fillStyle='rgba(0,0,0,.09)';x.fillRect(0,0,cv.width,cv.height);x.font=fs+'px monospace';
+    dr.forEach((y,i)=>{x.fillStyle=R(0,9)?'#2bd45a':'#d6ffe0';x.fillText(ch(set),i*fs,y*fs);dr[i]=(y*fs>cv.height&&Math.random()>.975)?0:y+1});
+  },50);
+  return()=>clearInterval(t);
+}
+function holly(root){
+  root.insertAdjacentHTML('beforeend','<div class="grid">'+['HEX DUMP','NETWORK LOG','CRACKER','TRACE ROUTE'].map((t,i)=>`<section><h4>${t}</h4><div class="b" id="p${i}"></div></section>`).join('')+'</div>');
+  const B=[0,1,2,3].map(i=>$('p'+i)),buf=[[],[],[],[]];
+  const push=(i,h)=>{buf[i].push(h);if(buf[i].length>40)buf[i].shift();B[i].innerHTML=buf[i].join('<br>');B[i].scrollTop=B[i].scrollHeight};
+  const ev=['SYN flood','port 22 open','auth bypass','packet inject','cert forged','TLS downgrade','shell spawned','kernel exploit','rootkit loaded','keylog active'];
+  const names=['AES-256','RSA-2048','SHA-512','WPA2','bcrypt'],pct=names.map(()=>0);
+  let tick=0,hop=0;
+  const t=setInterval(()=>{
+    tick++;
+    push(0,`<span class="dim">0x${R(0,65535).toString(16).padStart(4,'0')}</span> ${hx(12)}`);
+    if(Math.random()<.6)push(1,`<span class="${ch(['g','y','r'])}">[${new Date().toLocaleTimeString()}]</span> ${rip()} ${ch(ev)}`);
+    if(tick%3==0){const i=R(0,4);pct[i]=pct[i]>=100?0:Math.min(100,pct[i]+R(2,12))}
+    B[2].innerHTML=names.map((n,i)=>{const f=pct[i]/5|0;return`${n.padEnd(9)}<span class="g">${'█'.repeat(f)}</span><span class="dim">${'░'.repeat(20-f)}</span> ${String(pct[i]).padStart(3)}%`}).join('<br>')+`<br><br>guess: <span class="y">${Array.from({length:14},()=>ch('abcdef0123456789!@#$%')).join('')}</span>`;
+    if(tick%6==0){
+      if(hop<14){hop++;push(3,`hop ${String(hop).padStart(2)}  ${rip().padEnd(15)} ${R(4,220)} ms`)}
+      else if(hop==14){hop++;push(3,'<span class="r">&gt;&gt; TARGET LOCKED &lt;&lt;</span>')}
+      else if(++hop>18){hop=0;buf[3]=[]}
+    }
+  },110);
+  return()=>clearInterval(t);
+}
+
+/* ---------- commands ---------- */
+const C={
+  help(){out(`Commands:
+  <span class="g">hack</span> [target]    run a fake intrusion sequence
+  <span class="g">hollywood</span>        full-screen hacker dashboard
+  <span class="g">matrix</span>           digital rain
+  <span class="g">nmap</span> [ip]        fake port scan
+  <span class="g">crack</span> [hash]     fake password cracker
+  <span class="g">cyber</span>            war-room: spinning globe, router map, zoom
+  <span class="g">kali</span>             Kali prompt (exit goes back)
+  <span class="g">nethunter</span>  <span class="g">wifi</span>    NetHunter menu, fake airodump
+  <span class="g">toilet</span> [text]    big rainbow text
+  <span class="g">hydra</span> [ip]  <span class="g">netscan</span>  <span class="g">lynx</span> [url]
+  <span class="g">anon</span> (AnonOS)  <span class="g">join reaper</span>
+  <span class="g">orbitalstrikecanon</span> [address]  <span class="dim">(--visual = animation)</span>
+  neofetch  ls  pwd  whoami  date  echo  uname  pkg  clear  exit
+<span class="dim">Everything here is a visual simulation. Nothing real is scanned or hacked.
+Exit full-screen modes with ESC, ^C, or a tap.</span>`)},
+  clear(){[...T.children].forEach(e=>e!==L&&e.remove())},
+  ls(){out('<span class="c">storage</span>  <span class="c">downloads</span>  notes.txt  payload.sh  targets.lst')},
+  pwd(){out('/data/data/com.termux/files/home')},
+  whoami(){out('u0_a284')},
+  date(){out(new Date().toString())},
+  echo(a){out(esc(a.join(' ')))},
+  cd(){},
+  uname(){out('Linux localhost 5.15.148-android14 #1 SMP PREEMPT aarch64 Android')},
+  exit(){if(kali){setKali(0);return out('logout','dim')}out('<span class="dim">session closed. reload to start again.</span>');I.disabled=true},
+  sudo(){out('u0_a284 is not in the sudoers file. This incident will be reported.','r')},
+  rm(){out('rm: permission denied. Nice try.','y')},
+  neofetch(){out(`<span class="g">u0_a284</span>@<span class="g">localhost</span>
+-----------------
+<span class="g">OS</span>: Android 14 aarch64
+<span class="g">Kernel</span>: 5.15.148
+<span class="g">Shell</span>: bash 5.2.26
+<span class="g">Packages</span>: 148 (dpkg)
+<span class="g">Terminal</span>: Termux
+<span class="g">Hacker level</span>: <span class="y">over 9000 (simulated)</span>`)},
+  async pkg(a){
+    if(a[0]==='install'&&a[1]){out(`Reading package lists... Done`);await sl(500);out(`Unpacking ${esc(a[1])} ...`);await sl(600);out(`Setting up ${esc(a[1])} ...`);await sl(400);out('<span class="g">Done.</span>')}
+    else if(a[0]==='update'||a[0]==='upgrade'){for(const m of ['packages-cf.termux.dev','grimler.se','mirror.mwt.me']){out(`Hit:1 https://${m} stable InRelease`);await sl(350)}out('<span class="g">All packages are up to date.</span>')}
+    else out('Usage: pkg [update|upgrade|install &lt;package&gt;]')
+  },
+  async hack(a){
+    const t=esc(a[0]||'target.local'),ip=rip();
+    out(`<span class="c">[*] Target: ${t} (${ip})</span>`);await sl(400);
+    for(const s of ['Spoof MAC address','Bypass firewall','Inject payload','Brute-force SSH keys','Escalate privileges','Dump /etc/shadow'])await bar(s);
+    out('<span class="dim">Streaming memory...</span>');
+    for(let i=0;i<8;i++){out(`<span class="dim">0x${(i*16).toString(16).padStart(4,'0')}</span> ${hx(10)}`);await sl(70)}
+    await sl(300);out('ACCESS GRANTED','g big');out(`<span class="r">root@${t}:~#</span> <span class="dim">(simulation only, nothing was hacked)</span>`);
+  },
+  async nmap(a){
+    const ip=esc(a[0]||rip());
+    out('Starting Nmap 7.94 ( https://nmap.org )');await sl(600);out(`Nmap scan report for ${ip}`);out('Host is up (0.023s latency).');await sl(500);
+    out('PORT      STATE  SERVICE');
+    const pool=[['22/tcp','ssh'],['53/tcp','domain'],['80/tcp','http'],['443/tcp','https'],['3306/tcp','mysql'],['8080/tcp','http-proxy'],['5900/tcp','vnc'],['21/tcp','ftp']];
+    for(const p of pool.sort(()=>Math.random()-.5).slice(0,R(3,5))){out(`${p[0].padEnd(9)} <span class="g">open</span>   ${p[1]}`);await sl(450)}
+    out(`Nmap done: 1 IP address (1 host up) scanned in ${(R(200,900)/100).toFixed(2)} seconds`);
+  },
+  async crack(a){
+    const h=esc(a[0]||Array.from({length:32},()=>ch('0123456789abcdef')).join(''));
+    out(`<span class="c">[*] Hash:</span> ${h}`);const d=out('');
+    for(let i=0;i<45;i++){d.innerHTML=`trying <span class="y">${Array.from({length:R(6,10)},()=>ch('abcdefghijklmnopqrstuvwxyz0123456789!@#')).join('')}</span>  ${R(1,9)}.${R(10,99)} MH/s`;T.scrollTop=T.scrollHeight;await sl(60)}
+    d.innerHTML='<span class="g">[+] Password found:</span> hunter2';
+  },
+  async matrix(){await showFx(matrix)},
+  async hollywood(){await showFx(holly)}
+};
+/* ---------- kali / toilet ---------- */
+let kali=0;
+const PSH=()=>kali?'<span class="c">┌──(</span><span class="r">kali㉿kali</span><span class="c">)-[</span>~<span class="c">]</span>\n<span class="c">└─$</span>&nbsp;':kali?`<span class="g">${kali}@${kali=='anon'?'amnesia':'void'}</span>:~$&nbsp;`:'~ $&nbsp;';
+const setKali=v=>{kali=v;$('ps').innerHTML=PSH()};
+const FNT='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-!.',
+GL='25755 65656 34443 65556 74647 74644 34553 55755 72227 11152 55655 44447 57755 65555 25552 65644 25573 65655 34216 72222 55557 55552 55775 55255 55222 71247 75557 26227 61247 61216 55711 74616 34757 71222 75757 75716 00700 22202 00002'.split(' ');
+function banner(t,col){
+  t=t.toUpperCase().slice(0,12);const w=t.length<6?2:1,rows=['','','','',''];
+  for(const c of t){const g=GL[FNT.indexOf(c)]||'00000';for(let r=0;r<5;r++){const b=+g[r];for(let k=2;k>=0;k--)rows[r]+=((b>>k)&1?'█':' ').repeat(w);rows[r]+=' '.repeat(w)}}
+  return rows.map((l,i)=>`<span style="color:${col||`hsl(${i*40+120},100%,60%)`}">${l}</span>`).join('\n');
+}
+
+/* ---------- big war-room screen ---------- */
+const LAND=[[48,-100,24,38],[-15,-60,28,18],[52,15,13,28],[5,20,32,22],[48,95,24,55],[-25,134,12,18],[20,78,12,12],[72,-40,10,20]];
+const vec=(la,lo)=>{la*=Math.PI/180;lo*=Math.PI/180;return[Math.cos(la)*Math.sin(lo),Math.sin(la),Math.cos(la)*Math.cos(lo)]};
+const PTS=[];
+for(let la=-84;la<=84;la+=4)for(let lo=-180;lo<180;lo+=4)if(LAND.some(e=>((la-e[0])/e[2])**2+((lo-e[1])/e[3])**2<1))PTS.push([la,lo,1]);
+for(let la=-60;la<=60;la+=30)for(let lo=-180;lo<180;lo+=6)PTS.push([la,lo,0]);
+for(let lo=-180;lo<180;lo+=30)for(let la=-84;la<=84;la+=6)PTS.push([la,lo,0]);
+PTS.forEach(p=>p.push(vec(p[0],p[1])));
+const CITY=[[40.7,-74],[51.5,-.1],[55.7,37.6],[39.9,116.4],[19,72.8],[-33.9,151.2],[-23.5,-46.6],[6.5,3.4],[35.7,139.7],[37.8,-122.4]].map(c=>vec(c[0],c[1]));
+const rot=(v,a)=>{const c=Math.cos(a),s=Math.sin(a),x=v[0]*c+v[2]*s,z=-v[0]*s+v[2]*c;return[x,v[1]*.94-z*.34,v[1]*.34+z*.94]};
+const hash=(a,b,n,s)=>{let h=(a*374761393+b*668265263+n*2147483647+s*1274126177)|0;h=(h^(h>>>13))*1274126177|0;return((h^(h>>>16))>>>0)%100};
+
+function pGlobe(x,w,h,t,st){
+  const rd=Math.min(w,h)*.38,cx=w/2,cy=h/2+6,a=t*.0004;
+  x.strokeStyle='rgba(61,255,114,.5)';x.beginPath();x.arc(cx,cy,rd,0,7);x.stroke();
+  x.strokeStyle='rgba(61,255,114,.15)';x.beginPath();x.arc(cx,cy,rd*1.08,0,7);x.stroke();
+  for(const p of PTS){const v=rot(p[3],a);if(v[2]<=0)continue;x.fillStyle=p[2]?`rgba(61,255,114,${.25+v[2]*.65})`:'rgba(61,255,114,.14)';x.fillRect(cx+rd*v[0],cy-rd*v[1],p[2]?2:1,p[2]?2:1)}
+  st.arcs=st.arcs||[];st.n=st.n||0;
+  if(Math.random()<.04&&st.arcs.length<7){st.n++;st.arcs.push({a:R(0,9),b:R(0,9),t:0,c:ch(['#ff5a5a','#ffd45c','#55d6ff'])})}
+  st.arcs=st.arcs.filter(r=>(r.t+=.012)<1.6);
+  for(const r of st.arcs){
+    if(r.a==r.b)continue;
+    const A=CITY[r.a],B=CITY[r.b],d=Math.acos(Math.max(-1,Math.min(1,A[0]*B[0]+A[1]*B[1]+A[2]*B[2])))||.01,sn=Math.sin(d);
+    x.strokeStyle=r.c;x.beginPath();let on=0;
+    for(let u=Math.max(0,r.t-.6);u<=Math.min(1,r.t);u+=.02){
+      const k1=Math.sin((1-u)*d)/sn,k2=Math.sin(u*d)/sn,l=1+.25*Math.sin(Math.PI*u);
+      const v=rot([0,1,2].map(i=>(A[i]*k1+B[i]*k2)*l),a);
+      if(v[2]<=0){on=0;continue}
+      const px=cx+rd*v[0],py=cy-rd*v[1];on?x.lineTo(px,py):x.moveTo(px,py);on=1}
+    x.stroke()}
+  x.fillStyle='#fff';
+  for(const c of CITY){const v=rot(c,a);if(v[2]>0)x.fillRect(cx+rd*v[0]-1,cy-rd*v[1]-1,3,3)}
+  x.fillStyle='#3dff72';x.font='11px monospace';x.fillText('ATTACKS DETECTED '+st.n,10,h-10);
+}
+function pNet(x,w,h,t){
+  const cx=w/2,cy=h/2+6,N=10,rx=w*.38,ry=h*.32,bad=Math.floor(t/2500)%N;
+  x.font='9px monospace';
+  for(let i=0;i<N;i++){
+    const an=i/N*6.283+t*.0002,k=i%2?1:.6,px=cx+Math.cos(an)*rx*k,py=cy+Math.sin(an)*ry*k,red=i==bad;
+    x.strokeStyle=red?'#ff5a5a':'rgba(61,255,114,.35)';x.beginPath();x.moveTo(cx,cy);x.lineTo(px,py);x.stroke();
+    for(const o of[0,.5]){const u=(t*.0005+i*.173+o)%1,q=i%2?u:1-u;x.fillStyle=red?'#ff5a5a':'#d6ffe0';x.fillRect(cx+(px-cx)*q-1.5,cy+(py-cy)*q-1.5,3,3)}
+    x.fillStyle=red?'#ff5a5a':'#3dff72';x.beginPath();x.arc(px,py,red?5+2*Math.sin(t*.01):3.5,0,7);x.fill();
+    x.fillStyle='#7d848c';x.fillText(`10.0.${i}.${(i*37)%250}`,px+6,py-5);
+    if(red){x.fillStyle='#ff5a5a';x.fillText('BREACHED',px+6,py+8)}}
+  x.fillStyle='#55d6ff';x.fillRect(cx-9,cy-7,18,14);x.fillStyle='#000';x.fillRect(cx-6,cy-1,12,2);
+  x.fillStyle='#55d6ff';x.font='10px monospace';x.fillText('GW 192.168.1.1',cx-38,cy+22);
+}
+function pMap(x,w,h,t,st){
+  const D=7000,cyc=Math.floor(t/D),u=(t%D)/D;
+  if(st.cyc!==cyc){st.cyc=cyc;st.la=(R(-600,600)/10).toFixed(4);st.lo=(R(-1700,1700)/10).toFixed(4);st.ox=R(0,999)/100;st.oy=R(0,999)/100}
+  const z=Math.pow(2,1+u*9),cx=w/2,cy=h/2;
+  for(let n=1;n<=11;n++){
+    const s=40*z/2**n;if(s<10||s>360)continue;
+    const al=Math.min(1,(s-10)/30)*Math.min(1,(360-s)/120),m=2**n;
+    for(let i=Math.floor(st.ox*m-cx/s);i<=Math.ceil(st.ox*m+cx/s);i++)for(let j=Math.floor(st.oy*m-cy/s);j<=Math.ceil(st.oy*m+cy/s);j++){
+      const px=cx+(i-st.ox*m)*s,py=cy+(j-st.oy*m)*s,v=hash(i,j,n,cyc);
+      if(v<38){x.fillStyle=`rgba(61,255,114,${al*(v<10?.22:.1)})`;x.fillRect(px+1,py+1,s-2,s-2)}
+      x.strokeStyle=`rgba(61,255,114,${al*.22})`;x.strokeRect(px,py,s,s)}}
+  x.strokeStyle='#ff5a5a';x.beginPath();x.arc(cx,cy,18+6*Math.sin(t*.008),0,7);x.moveTo(cx-30,cy);x.lineTo(cx+30,cy);x.moveTo(cx,cy-30);x.lineTo(cx,cy+30);x.stroke();
+  x.fillStyle='#3dff72';x.font='11px monospace';x.fillText(`ZOOM x${z.toFixed(1)}  LAT ${st.la}  LON ${st.lo}`,10,h-10);
+  if(u>.8){x.fillStyle='#ff5a5a';x.fillText('TARGET LOCKED',cx+24,cy-22)}
+}
+function bigScreen(root){
+  const cv=document.createElement('canvas');root.append(cv);
+  const x=cv.getContext('2d'),S=[{},{},{}],T0=performance.now(),P=[['GLOBAL ATTACK MAP',pGlobe],['NETWORK TOPOLOGY',pNet],['SATELLITE UPLINK',pMap]];
+  let raf,pw=0,ph=0;
+  const loop=now=>{
+    const d=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+    if(W!=pw||H!=ph){pw=W;ph=H;cv.width=W*d;cv.height=H*d}
+    x.setTransform(d,0,0,d,0,0);x.fillStyle='#000';x.fillRect(0,0,W,H);
+    const lay=W>H*1.15?[[0,0,W*.56,H],[W*.56,0,W*.44,H*.5],[W*.56,H*.5,W*.44,H*.5]]:[[0,0,W,H*.42],[0,H*.42,W,H*.29],[0,H*.71,W,H*.29]];
+    P.forEach((p,i)=>{
+      const[r0,r1,rw,rh]=lay[i],w=rw-6,h=rh-6;
+      x.save();x.translate(r0+3,r1+3);x.beginPath();x.rect(0,0,w,h);x.clip();p[1](x,w,h,now-T0,S[i]);x.restore();
+      x.strokeStyle='#1d6b36';x.strokeRect(r0+3,r1+3,w,h);x.fillStyle='#0d2f19';x.fillRect(r0+3,r1+3,w,14);
+      x.fillStyle='#3dff72';x.font='10px monospace';x.fillText(p[0],r0+8,r1+14)});
+    raf=requestAnimationFrame(loop)};
+  raf=requestAnimationFrame(loop);
+  return()=>cancelAnimationFrame(raf);
+}
+
+Object.assign(C,{
+  toilet(a){out(banner(a.join(' ')||'HACK'))},
+  kali(){setKali(1);out(banner('KALI','#4aa3ff'));out('<span class="c">Kali GNU/Linux Rolling</span> <span class="dim">(simulated)</span>\nTry <span class="g">nethunter</span>, <span class="g">nmap</span> or <span class="g">cyber</span>. <span class="g">exit</span> returns to Termux.')},
+  async nethunter(){
+    out(banner('NETHUNTER','#4aa3ff'));out('<span class="c">Kali NetHunter</span> <span class="dim">(simulated menu)</span>');
+    for(const m of['WiFi attacks (aircrack-ng)','HID keyboard attacks','BadUSB MITM','Bluetooth arsenal','Metasploit / msfconsole','Nmap scanner']){out(` <span class="g">[+]</span> ${m}`);await sl(150)}
+    out('wlan0mon: <span class="g">monitor mode enabled</span>\nTry <span class="g">wifi</span> to scan nearby networks.');
+  },
+  async wifi(){
+    out('<span class="dim"> BSSID              PWR  CH  ENC   ESSID</span>');
+    for(const n of['JioFiber-4G','Airtel_X','CafeGuest','TP-Link_7F2A','Home_5G','FBI Van #3']){
+      const m=Array.from({length:6},()=>R(16,255).toString(16)).join(':');
+      out(` ${m}  -${R(30,90)}  ${String(R(1,11)).padStart(2)}  ${ch(['WPA2','WPA2','WEP','OPN']).padEnd(4)}  <span class="y">${n}</span>`);await sl(300)}
+  },
+  async cyber(){await showFx(bigScreen)}
+});
+/* ---------- orbital strike cannon ---------- */
+let STG='TARGET-01';
+function strike(root){
+  const cv=document.createElement('canvas');root.append(cv);
+  const x=cv.getContext('2d'),T0=performance.now(),stars=Array.from({length:70},()=>[Math.random(),Math.random()]),dust=[];
+  let raf,pw=0,ph=0,boom=0;
+  const to=setTimeout(()=>closeFx(),12000);
+  const loop=now=>{
+    const t=(now-T0)/1000,d=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight,cx=W/2,gy=H*.78,sy=H*.12;
+    if(W!=pw||H!=ph){pw=W;ph=H;cv.width=W*d;cv.height=H*d}
+    x.setTransform(d,0,0,d,0,0);
+    const g=x.createLinearGradient(0,0,0,gy);g.addColorStop(0,'#000');g.addColorStop(1,boom?'#4a1a06':'#031820');x.fillStyle=g;x.fillRect(0,0,W,gy);
+    x.fillStyle='#fff';stars.forEach(s=>x.fillRect(s[0]*W,s[1]*gy,1.5,1.5));
+    x.fillStyle='#06100a';x.fillRect(0,gy,W,H-gy);x.strokeStyle='rgba(61,255,114,.25)';
+    for(let i=1;i<9;i++){const y=gy+(H-gy)*(i/9)**2;x.beginPath();x.moveTo(0,y);x.lineTo(W,y);x.stroke()}
+    for(let i=-8;i<=8;i++){x.beginPath();x.moveTo(cx+i*8,gy);x.lineTo(cx+i*W/12,H);x.stroke()}
+    x.fillStyle='#9fb';x.fillRect(cx-6,sy-6,12,12);x.fillStyle='#4aa3ff';x.fillRect(cx-36,sy-3,26,6);x.fillRect(cx+10,sy-3,26,6);
+    if(t<4.7){x.strokeStyle='#ff5a5a';x.beginPath();x.ellipse(cx,gy+22,26+4*Math.sin(t*9),8,0,0,7);x.moveTo(cx-40,gy+22);x.lineTo(cx+40,gy+22);x.stroke()}
+    if(t>2.5&&t<4.7){const k=(t-2.5)/2.2;x.fillStyle=`rgba(255,140,60,${.3+k*.7})`;x.beginPath();x.arc(cx,sy+12,4+k*24,0,7);x.fill()}
+    if(t>4.7&&t<6.2){
+      const wd=Math.min(1,Math.max(0,1-(t-5.4)/.8))*(18+Math.random()*6)*Math.min(1,(t-4.7)*8),bg=x.createLinearGradient(cx-wd,0,cx+wd,0);
+      bg.addColorStop(0,'rgba(255,90,40,0)');bg.addColorStop(.5,'#fff');bg.addColorStop(1,'rgba(255,90,40,0)');x.fillStyle=bg;x.fillRect(cx-wd,sy+12,wd*2,gy-sy-12)}
+    if(!boom&&t>4.8){boom=t;for(let i=0;i<110;i++)dust.push({x:cx,y:gy,vx:(Math.random()-.5)*6,vy:-Math.random()*7-1,l:1})}
+    if(boom){
+      const b=t-boom;
+      if(b<.5){x.fillStyle=`rgba(255,255,255,${1-b/.5})`;x.fillRect(0,0,W,H)}
+      for(let i=0;i<3;i++){const r=(b-i*.3)*W*.45;if(r>0){x.strokeStyle=`rgba(255,${170-i*50},60,${Math.max(0,1-r/(W*.5))})`;x.lineWidth=3;x.beginPath();x.ellipse(cx,gy+8,r,r*.2,0,0,7);x.stroke();x.lineWidth=1}}
+      x.fillStyle=`rgba(255,${R(90,190)},40,${Math.max(0,.85-b*.2)})`;x.beginPath();x.arc(cx,gy,28+b*30,Math.PI,0);x.fill();
+      for(const p of dust){p.x+=p.vx;p.y=Math.min(gy+4,p.y+p.vy);p.vy+=.12;p.l-=.007;if(p.l>0){x.fillStyle=`rgba(255,${R(110,220)},60,${p.l})`;x.fillRect(p.x,p.y,3,3)}}}
+    x.font='12px monospace';x.fillStyle='#3dff72';x.fillText('ORBITAL STRIKE CANNON // TARGET: '+STG,10,16);
+    x.font='bold 16px monospace';x.fillStyle=boom?'#ff5a5a':'#ffd45c';x.textAlign='center';
+    x.fillText(t<2.5?'ACQUIRING SATELLITE LINK...':t<4.7?`CHARGING  T-${(4.7-t).toFixed(1)}s`:t<8?'FIRING':'TARGET NEUTRALIZED',cx,H-18);x.textAlign='left';
+    raf=requestAnimationFrame(loop)};
+  raf=requestAnimationFrame(loop);
+  return()=>{cancelAnimationFrame(raf);clearTimeout(to)};
+}
+
+/* ---------- more fake tools ---------- */
+Object.assign(C,{
+  async hydra(a){
+    const t=esc(a[0]||rip());
+    out(`Hydra v9.5 (c) The Hacker's Choice <span class="dim">(simulated)</span>\n[DATA] attacking ssh://${t}:22/`);
+    for(let i=1;i<=16;i++){out(`[ATTEMPT] target ${t} - login "<span class="y">${ch(['root','admin','user','guest','pi'])}</span>" - pass "<span class="y">${ch(['123456','password','qwerty','letmein','toor'])}${R(0,99)}</span>" - ${i} of 16`);await sl(110)}
+    out(`<span class="g">[22][ssh] host: ${t}   login: admin   password: hunter2</span>\n1 of 1 target successfully completed, 1 valid password found`);
+  },
+  lynx(a){
+    const u=esc(a[0]||'example.com');
+    out(`<span class="c">   Welcome to ${u}</span> <span class="dim">(p1 of 1)</span>\n\n   ${u} is up and running.\n   Rendered by lynx, the text-only browser: no images, no trackers.\n${u.endsWith('.onion')?'   <span class="r">Hidden service reached through 3 relays.</span>\n':''}\n   <span class="y">[1]News  [2]Forum  [3]Downloads  [4]Login</span>\n\n<span class="dim">Arrow keys: Up and Down to move. Right: follow link. q: quit</span>`);
+  },
+  async netscan(){
+    out('<span class="c">[*] Scanning 192.168.1.0/24</span>');await bar('Probing hosts');
+    out('<span class="dim">IP              MAC                Vendor</span>');
+    const V=['TP-Link','Apple','Samsung','Xiaomi','Raspberry Pi','Intel','Espressif','Sony','Huawei'],n=R(6,9);
+    for(let i=0;i<n;i++){out(`${('192.168.1.'+(1+i*25+R(0,20))).padEnd(15)} ${Array.from({length:6},()=>R(16,255).toString(16)).join(':')}  ${V[i]}`);await sl(320)}
+    out(`<span class="g">${n} hosts up</span>`);
+  },
+  async anon(){
+    out(banner('ANON','#b07cff'));out('<span class="c">AnonOS 4.2</span> <span class="dim">(amnesic live system, simulated)</span>');
+    await bar('Wiping RAM');await bar('Spoofing MAC');out('Building circuit:');
+    for(const r of['Reykjavik, IS','Zurich, CH','Singapore, SG','Panama City, PA','Oslo, NO'].sort(()=>Math.random()-.5).slice(0,3)){out(` <span class="g">&gt;</span> relay ${rip()}  ${r}`);await sl(500)}
+    out(`Exit IP: <span class="g">${rip()}</span>   Real IP: <span class="r">hidden</span>\nTracking blocked. Logs: none. <span class="g">exit</span> to leave.`);setKali('anon');
+  },
+  async reaper(){
+    out('<span class="r">[!] Connecting to REAPER node...</span>');await sl(700);await bar('Encrypted handshake');await bar('Verifying operative');
+    out(banner('REAPER','#ff5a5a'));
+    out(`Access granted. Welcome, <span class="r">${ch(['Phantom','Wraith','Cipher','Nightfall','Void'])}-${R(10,99)}</span>.\nOperatives online: ${R(300,900)}   Active ops: ${R(3,12)}\n<span class="dim">(fictional collective, simulation only)</span>`);setKali('reaper');
+  },
+  join(a){return a[0]==='reaper'?C.reaper():out('usage: join reaper')},
+  async orbitalstrikecanon(a){
+    const vis=a[0]==='-v'||a[0]==='--visual';if(vis)a=a.slice(1);
+    if(!vis){
+      const raw=a.join(' ')||rip(),tg=esc(raw),la=(R(-800,800)/10).toFixed(4),lo=(R(-1800,1800)/10).toFixed(4);
+      const T={
+        recon:[()=>`[*] dig ${tg} A +short -> ${rip()}`,()=>`[+] port ${ch([21,22,53,80,443,3306,8080])}/tcp <span class="g">open</span>  ${ch(['ssh','http','https','mysql','dns'])}`,()=>`[*] traceroute hop ${R(1,30)}  ${rip()}  ${R(3,190)}ms`,()=>`[*] banner: ${ch(['nginx/1.24','Apache/2.4.58','OpenSSH_9.6','lighttpd/1.4'])}`,()=>`[+] subdomain found: ${ch(['admin','vpn','mail','dev','cam'])}.${tg}`],
+        exploit:[()=>`<span class="y">$</span> ./exploit --rhost ${tg} --payload ${ch(['reverse_tcp','bind_shell','meterpreter'])} --lport ${R(1024,65000)}`,()=>`[*] sending stage ${R(1,9)} (${R(100,999)} bytes) ...`,()=>`<span class="dim">0x${R(0,16777215).toString(16).padStart(6,'0')}:</span> ${hx(12)}`,()=>`[+] ${ch(['SQLi','XSS','RCE','buffer overflow','auth bypass'])} <span class="g">confirmed</span> on /${ch(['login','admin','api/v1','upload'])}`,()=>`mov ${ch(['eax','ebx','rcx','rdx'])}, 0x${R(0,65535).toString(16)}  ; ${ch(['stack pivot','rop gadget','shellcode','nop sled'])}`],
+        sat:[()=>`[SAT-${R(1,12)}] uplink ${ch(['locked','locked','syncing'])}  az ${R(0,359)}.${R(0,9)}  el ${R(10,89)}.${R(0,9)}`,()=>`[*] ephemeris update ... ${R(1,99)}%`,()=>`[+] gimbal ${ch(['X','Y','Z'])} aligned  err 0.00${R(1,9)} deg`,()=>`[*] atmos correction ${(R(1,99)/100).toFixed(2)} km/s`,()=>`[SAT] relay ${rip()} <span class="g">ack</span>`]
+      };
+      const burst=async(k,n,d)=>{for(let i=0;i<n;i++){out(ch(T[k])());await sl(d+R(0,25))}};
+      out(`<span class="r">ORBITAL STRIKE CANNON v3.1</span> <span class="dim">(simulated)</span>\n<span class="c">[*] Target address:</span> ${tg}`);
+      await burst('recon',22,35);out(`<span class="c">[+] Geolocated:</span> LAT ${la}  LON ${lo}`);
+      await burst('exploit',28,30);out('<span class="g">[+] Root shell obtained. Satellite C2 reached.</span>');
+      await burst('sat',22,35);
+      for(let p=0;p<=100;p+=10){out(`[ION] capacitor charge [<span class="r">${'#'.repeat(p/10)}</span>${'.'.repeat(10-p/10)}] ${p}%`);await sl(120)}
+      out(`<span class="r">[!] TARGET LOCKED: ${la}, ${lo}</span>`);
+      for(let c=5;c>0;c--){out(`<span class="y">FIRING IN ${c}...</span>`);await sl(600)}
+      out(banner('BOOM','#ff5a5a'));out('TARGET DESTROYED','g big');out('<span class="dim">(simulation only, nothing was hit. Add --visual for the animation.)</span>');
+      return;
+    }
+    STG=(a.join(' ')||'GRID-'+R(1,99)).toUpperCase().slice(0,16);
+    out(`<span class="c">[*] Linking to ORBITAL STRIKE CANNON</span>\n[*] Target: ${esc(STG)}`);await bar('Aligning satellite');
+    out('<span class="r">[!] Weapon armed. Tap or ESC to abort.</span>');await sl(600);
+    await showFx(strike);out('<span class="y">Strike complete. (simulation, nothing happened)</span>');
+  }
+});
+C.hackscreen=C.hollywood;C.warroom=C.globe=C.cyber;C.figlet=C.toilet;C.tails=C.anonymous=C.anon;C.ion=C.osc=C.orbital=C.orbitalstrikecanon;C.arpscan=C.netscan;
+
+async function run(v){
+  out(`${PSH()}${esc(v)}`);
+  const [cmd,...a]=v.trim().split(/\s+/);
+  if(!cmd)return;
+  hist.push(v);hi=hist.length;
+  const f=C[cmd];
+  if(!f){out(`bash: ${esc(cmd)}: command not found`);return}
+  busy=true;cancel=false;L.style.display='none';
+  try{await f(a)}catch(e){if(e==='x')out('^C','dim');else throw e}
+  busy=false;L.style.display='flex';I.focus();T.scrollTop=T.scrollHeight;
+}
+function stop(){cancel=true;if(fxOn)closeFx();else if(!busy){out(`${PSH()}${esc(I.value)}^C`);I.value=''}}
+function key(k){
+  if(k==='esc'||k==='c')stop();
+  else if(k==='l')C.clear();
+  else if(k==='tab'){const m=Object.keys(C).filter(n=>n.startsWith(I.value));if(m.length===1)I.value=m[0]}
+  else if(k==='up'){if(hi>0)I.value=hist[--hi]}
+  else if(k==='down'){I.value=hi<hist.length-1?hist[++hi]:'';hi=Math.min(hi+(hi<hist.length-1?0:1),hist.length)}
+  else I.value+=k;
+  if(!busy)I.focus();
+}
+I.addEventListener('keydown',e=>{
+  if(e.key==='Enter'){const v=I.value;I.value='';run(v)}
+  else if(e.key==='ArrowUp'){e.preventDefault();key('up')}
+  else if(e.key==='ArrowDown'){e.preventDefault();key('down')}
+  else if(e.key==='Tab'){e.preventDefault();key('tab')}
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'||(e.ctrlKey&&e.key==='c'&&!String(getSelection()))){e.preventDefault();stop()}
+  else if(e.ctrlKey&&e.key==='l'){e.preventDefault();C.clear()}
+});
+$('keys').addEventListener('mousedown',e=>e.preventDefault());
+$('keys').addEventListener('click',e=>{const k=e.target.dataset&&e.target.dataset.k;if(k)key(k)});
+T.addEventListener('click',()=>{if(!String(getSelection()))I.focus()});
+
+out(`<span class="g">Welcome to Termux</span>
+
+Docs:       https://termux.dev/docs
+Community:  https://termux.dev/community
+
+Install packages with <span class="c">pkg install &lt;name&gt;</span>.
+Type <span class="g">help</span> to see the hacking commands,
+or just try <span class="g">hack</span>, <span class="g">hollywood</span> or <span class="g">matrix</span>.
+`);
+I.focus();
+</script>
+</body>
+</html>
